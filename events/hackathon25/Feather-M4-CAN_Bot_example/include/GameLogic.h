@@ -25,4 +25,7 @@ void process_Die(uint8_t* data);
 void process_GameFinish(uint8_t* data);
 void process_Error(uint8_t* data);
 
+extern bool grid[64][64]; // Spielfeld
+extern std::vector<std::pair<uint8_t, uint8_t>> player_traces[4]; // Spieler-Traces
+
 #endif

@@ -6,8 +6,10 @@
 
 const uint8_t GRID_WIDTH = 64;
 const uint8_t GRID_HEIGHT = 64;
-bool grid[GRID_WIDTH][GRID_HEIGHT] = {false};
-std::vector<std::pair<uint8_t, uint8_t>> player_traces[4];
+bool grid[GRID_WIDTH][GRID_HEIGHT] = {false}; // Spielfeld
+std::vector<std::pair<uint8_t, uint8_t>> player_traces[4]; // Spieler-Traces
+
+uint8_t last_direction = 0; // 0 bedeutet keine Bewegung (Initialwertz
 
 // Hilfsfunktion: Berechne Manhattan-Distanz
 float heuristic(uint8_t x1, uint8_t y1, uint8_t x2, uint8_t y2) {
@@ -47,8 +49,16 @@ std::vector<Position> findPath(uint8_t startX, uint8_t startY, uint8_t goalX, ui
             uint8_t ny = (current.y + dy[i] + GRID_HEIGHT) % GRID_HEIGHT; // Wrap-around
 
             if (!grid[nx][ny] && !closedSet[nx][ny]) {
-                float g = current.g + 1; // Kosten für Bewegung
+                float g = current.g + 1;
                 float h = heuristic(nx, ny, goalX, goalY);
+
+                // Erhöhe die Kosten für Felder in der Nähe von Gegnern
+                for (int i = 0; i < 4; i++) {
+                    if (i != player_ID - 1) {
+                        h += 1.0 / (heuristic(nx, ny, player_traces[i].back().first, player_traces[i].back().second) + 1);
+                    }
+                }
+
                 openSet.emplace(nx, ny, g, h, new Position(current));
             }
         }
@@ -74,8 +84,6 @@ int countFreeSpace(uint8_t x, uint8_t y) {
     }
     return freeSpace;
 }
-
-
 
 // Verbesserte Zielsetzung und Pfadfindung
 void process_GameState(uint8_t* data) {
@@ -109,15 +117,27 @@ void process_GameState(uint8_t* data) {
     uint8_t goalY = player1_y;
     float bestScore = -1;
 
+    // Bewegungsrichtungen definieren
+    const int dx[] = {0, 1, 0, -1}; // UP, RIGHT, DOWN, LEFT
+    const int dy[] = {-1, 0, 1, 0};
+
     for (uint8_t x = 0; x < GRID_WIDTH; x++) {
         for (uint8_t y = 0; y < GRID_HEIGHT; y++) {
             if (!grid[x][y]) { // Freier Bereich
                 int freeSpace = countFreeSpace(x, y);
                 float distance = heuristic(player1_x, player1_y, x, y);
-                float score = freeSpace - distance * 0.5; // Balance zwischen Platz und Distanz
+
+                // Gegnerpositionen berücksichtigen
+                float danger = 0;
+                for (int i = 0; i < 4; i++) {
+                    if (i != player_ID - 1) {
+                        danger += 1.0 / (heuristic(x, y, player_traces[i].back().first, player_traces[i].back().second) + 1);
+                    }
+                }
+
+                float score = freeSpace - distance * 0.5 - danger * 2.0; // Balance zwischen Platz, Distanz und Gefahr
 
                 if (score > bestScore) {
-                    // Prüfen, ob das Ziel erreichbar ist
                     std::vector<Position> testPath = findPath(player1_x, player1_y, x, y);
                     if (!testPath.empty()) {
                         bestScore = score;
@@ -140,9 +160,27 @@ void process_GameState(uint8_t* data) {
         else if (nextMove.y > player1_y) send_Move(3); // DOWN
         else if (nextMove.y < player1_y) send_Move(1); // UP
     } else {
-        // Keine Pfad gefunden, zufällige Bewegung als Fallback
-        Serial.println("No path found! Making a random move.");
-        send_Move(random(1, 5)); // Zufällige Richtung: 1=UP, 2=RIGHT, 3=DOWN, 4=LEFT
+        Serial.println("No path found! Choosing safest move.");
+        int maxFreeSpace = -1;
+        uint8_t bestDirection = 0;
+
+        for (int i = 1; i <= 4; i++) { // UP, RIGHT, DOWN, LEFT
+            uint8_t nx = player1_x + dx[i - 1];
+            uint8_t ny = player1_y + dy[i - 1];
+            if (!grid[nx][ny]) {
+                int freeSpace = countFreeSpace(nx, ny);
+                if (freeSpace > maxFreeSpace) {
+                    maxFreeSpace = freeSpace;
+                    bestDirection = i;
+                }
+            }
+        }
+
+        if (bestDirection > 0) {
+            send_Move(bestDirection);
+        } else {
+            send_Move(random(1, 5)); // Zufällige Bewegung als letzter Ausweg
+        }
     }
 }
 

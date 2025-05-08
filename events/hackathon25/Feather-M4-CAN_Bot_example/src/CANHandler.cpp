@@ -77,6 +77,22 @@ void send_GameAck() {
 void send_Move(uint8_t direction) {
     if (is_dead) return;
 
+    // Verhindere Bewegung in ein belegtes Feld
+    uint8_t nx = player_traces[player_ID - 1].back().first;
+    uint8_t ny = player_traces[player_ID - 1].back().second;
+
+    switch (direction) {
+        case 1: ny--; break; // UP
+        case 2: nx++; break; // RIGHT
+        case 3: ny++; break; // DOWN
+        case 4: nx--; break; // LEFT
+    }
+
+    if (grid[nx][ny]) {
+        Serial.println("Invalid move: Field is occupied.");
+        return;
+    }
+
     CAN.beginPacket(Move);
     CAN.write(player_ID);
     CAN.write(direction);
