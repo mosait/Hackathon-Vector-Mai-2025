@@ -1,75 +1,84 @@
-# Game Tactic: Advanced Territorial Heuristic Algorithm
+Hier ist die vereinfachte und verständlich auf Deutsch übersetzte Version des Textes:
 
-## Overview
+---
 
-Our strategy implements a heuristic-based greedy algorithm optimized for the Tron-style game where players leave trails behind them, wrap around walls, and die upon 180° turns or collisions with trails.
+# Spieltaktik: Erweiterter Algorithmus zur Gebietskontrolle
 
-## Core Strategic Elements
+## Überblick
 
-### 1. Space Control Analysis
+Diese Strategie verwendet einen klugen, auf Regeln basierenden Algorithmus, der speziell für ein Tron-ähnliches Spiel entwickelt wurde. In diesem Spiel hinterlassen Spieler eine Spur, sie können an den Spielfeldrändern herumlaufen, sterben aber bei einer 180°-Drehung oder wenn sie in Spuren krachen.
 
-We use flood-fill calculations to determine the amount of accessible space from each potential move position. The algorithm strongly favors moves that maximize our accessible territory while avoiding situations that could trap us in smaller regions.
+## Zentrale Strategiepunkte
 
-### 2. Opponent Prediction and Avoidance
+### 1. Analyse des verfügbaren Raums
 
-Our algorithm:
+Wir berechnen mit einer sogenannten „Flood-Fill“-Methode, wie viel freier Platz von jeder möglichen Position aus zugänglich ist. Der Algorithmus bevorzugt Züge, die möglichst viel Raum freihalten und vermeidet solche, die den Spieler in enge Bereiche einsperren könnten.
 
-- Tracks all opponent positions and movement patterns
-- Predicts opponent trajectories based on their historical moves
-- Assigns high penalties to moves that could result in collisions with predicted opponent paths
-- Maintains strategic distance from opponents to reduce collision risk
+### 2. Gegner erkennen und vermeiden
 
-### 3. Wall-Following Optimization
+Der Algorithmus:
 
-Taking advantage of the grid wrap-around mechanics, our algorithm implements a selective wall-following approach to:
+- Beobachtet die Positionen und Bewegungsmuster aller Gegner
+- Schätzt voraus, wie sich Gegner wahrscheinlich bewegen
+- Bestraft Züge stark, die zu einem Zusammenstoß mit dem Gegner führen könnten
+- Hält Abstand zu Gegnern, um das Risiko einer Kollision zu verringern
 
-- Maximize efficiency of path creation
-- Create natural barriers that opponents must avoid
-- Establish territory control along grid edges
+### 3. Nutzen der Spielfeldränder
 
-### 4. Move Scoring System
+Da das Spielfeld „um die Ecken geht“ (Wrap-around), nutzt der Algorithmus gezielt die Wände, um:
 
-Each potential move is evaluated with a sophisticated scoring function that balances:
+- Wege effizienter zu planen
+- natürliche Barrieren zu erzeugen, die Gegner meiden müssen
+- die Kontrolle über die Spielfeldränder zu sichern
 
-- Available open space (10× weight)
-- Distance to opponents (0.5× weight)
-- Wall adjacency (5× bonus for having at least one adjacent wall)
-- Direction consistency (5× bonus for continuing in same direction)
-- Heavy penalties for illegal 180° turns (-2000 points)
-- Penalties for potential collision with opponents' predicted moves
+### 4. Bewertung von Zügen
 
-### 5. Adaptive Emergency Behavior
+Jeder mögliche Zug wird mit einem Punktesystem bewertet. Dabei zählen:
 
-When all evaluated moves score poorly (below -500), the algorithm switches to a simple survival mode that seeks any valid move, prioritizing those that don't result in immediate death.
+- Freier Raum (stark gewichtet: 10×)
+- Abstand zu Gegnern (weniger stark: 0,5×)
+- Nähe zur Wand (Bonus von 5 Punkten, wenn mindestens eine Wand angrenzend ist)
+- Richtung beibehalten (5 Punkte extra, wenn man geradeaus weiterfährt)
+- Unerlaubte 180°-Drehung (hohe Strafe: –2000 Punkte)
+- Mögliche Kollision mit Gegnern (ebenfalls Strafe)
 
-## Implementation Details
+### 5. Notfall-Verhalten
 
-The algorithm is implemented with careful consideration of the Feather M4 CAN's resource constraints:
+Wenn alle Züge schlecht bewertet werden (unter –500 Punkten), wechselt der Algorithmus in einen „Überlebensmodus“. Dann wird einfach versucht, irgendeinen gültigen Zug zu finden, der nicht sofort zum Tod führt.
 
-1. **Efficient Data Structures**
+## Technische Umsetzung
 
-   - Boolean grid representation of the game state
-   - Compact player trace vectors
-   - Minimal memory allocation during computation
+Der Algorithmus ist für den Feather M4 CAN Mikrocontroller optimiert:
 
-2. **Optimized Computation**
+1. **Effiziente Datenstruktur**
 
-   - Limited-depth evaluation
-   - Early termination of dead-end calculations
-   - Reuse of previously calculated values where possible
+   - Spielfeld als einfaches Gitter aus Wahr/Falsch-Werten
+   - Spielerbewegungen werden kompakt gespeichert
+   - Speicherverbrauch wird niedrig gehalten
 
-3. **Balanced Performance**
-   - Each game state update triggers a full evaluation of all possible moves
-   - The scoring system adapts to changing game conditions
-   - Computations complete within the 100ms game state update window
+2. **Rechenoptimierung**
 
-## Algorithmic Edge
+   - Nur bis zu einer gewissen Tiefe wird vorgerechnet
+   - Rechenwege werden früh abgebrochen, wenn sie in Sackgassen führen
+   - Bereits bekannte Werte werden wiederverwendet
 
-Our implementation outperforms simpler strategies by:
+3. **Gleichgewicht zwischen Leistung und Geschwindigkeit**
 
-- Thinking multiple moves ahead through space evaluation
-- Adapting to opponent behaviors through prediction
-- Balancing both offensive (territory control) and defensive (survival) play
-- Optimizing movement patterns for the wrap-around grid mechanics
+   - Bei jeder Spielzustandsänderung werden alle Züge neu bewertet
+   - Das Bewertungssystem passt sich ständig der Spielsituation an
+   - Alles passiert innerhalb von 100 Millisekunden
 
-This blend of territorial control, opponent prediction, and adaptive decision-making creates a highly competitive player in the Vector Hackathon Tron-style game.
+## Strategischer Vorteil
+
+Dieser Algorithmus ist besser als einfache Taktiken, weil er:
+
+- Vorausdenkt, indem er freien Raum bewertet
+- Gegnerbewegungen vorausahnt und darauf reagiert
+- Offensive (Gebietseroberung) und Defensive (Überleben) ausbalanciert
+- Die Besonderheiten des Spielfelds (Wrap-around) optimal nutzt
+
+Diese Kombination aus Raumkontrolle, Gegneranalyse und flexibler Entscheidungsfindung macht den Spieler in einem Tron-ähnlichen Spiel beim Vector Hackathon besonders stark.
+
+---
+
+Möchtest du, dass ich daraus eine Präsentation oder ein erklärendes Schaubild erstelle?
