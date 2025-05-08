@@ -84,7 +84,7 @@ std::vector<Position> findPath(uint8_t startX, uint8_t startY, uint8_t goalX, ui
 const uint32_t hardware_ID = (*(RoReg *)0x008061FCUL);
 uint8_t player_ID = 0;
 uint8_t game_ID = 0;
-bool is_dead; 
+bool is_dead = false; 
 
 
 // Function prototypes
