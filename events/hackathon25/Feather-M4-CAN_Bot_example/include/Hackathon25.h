@@ -3,6 +3,9 @@
 
 #include <stdint.h>
 
+extern uint8_t player_ID;
+extern bool is_dead;
+
 // CAN Message IDs
 enum CAN_MSGs {
     Join = 0x100,
