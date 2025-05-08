@@ -84,7 +84,7 @@ std::vector<Position> findPath(uint8_t startX, uint8_t startY, uint8_t goalX, ui
 const uint32_t hardware_ID = (*(RoReg *)0x008061FCUL);
 uint8_t player_ID = 0;
 uint8_t game_ID = 0;
-bool is_dead; 
+bool is_dead = false; 
 
 
 // Function prototypes
@@ -99,6 +99,7 @@ void send_Move(uint8_t direction);
 void send_Rename(const char* name, uint8_t size);
 void send_RenameFollow(const char* name);
 void onReceive(int packetSize);
+int countFreeSpace(uint8_t x, uint8_t y);
 
 // CAN receive callback
 void onReceive(int packetSize) {
@@ -190,11 +191,6 @@ void send_Join(){
 }
 
 void send_GameAck() {
-  if (is_dead) {
-    Serial.println("Cannot send GameAck: Player is dead.");
-    return; // Nachricht nicht senden
-  }
-
   CAN.beginPacket(GameAck);
   CAN.write(player_ID); // Spieler-ID senden
   CAN.endPacket();
@@ -324,11 +320,6 @@ int countFreeSpace(uint8_t x, uint8_t y) {
 }
 
 void send_Rename(const char* name, uint8_t size) {
-  if (is_dead) {
-    Serial.println("Cannot send Rename: Player is dead.");
-    return; // Nachricht nicht senden
-  }
-
   CAN.beginPacket(0x500); // FrameID for rename
   CAN.write(player_ID);
   CAN.write(size);
@@ -338,11 +329,6 @@ void send_Rename(const char* name, uint8_t size) {
 }
 
 void send_RenameFollow(const char* name) {
-  if (is_dead) {
-    Serial.println("Cannot send RenameFollow: Player is dead.");
-    return; // Nachricht nicht senden
-  }
-
   CAN.beginPacket(0x510); // FrameID for renamefollow
   CAN.write(player_ID);
   CAN.write((uint8_t*)name, 7); // Next 7 characters
@@ -400,4 +386,15 @@ void process_GameFinish(uint8_t* data) {
       uint8_t points = data[i * 2 + 1];
       Serial.printf("Player %u: %u points\n", player_id, points);
   }
+
+  // Spielzustand zurücksetzen
+  is_dead = false; // Spieler ist wieder aktiv
+  memset(grid, false, sizeof(grid)); // Spielfeld zurücksetzen
+  for (int i = 0; i < 4; i++) {
+      player_traces[i].clear(); // Traces aller Spieler löschen
+  }
+
+  // Automatisch erneut dem Spiel beitreten
+  Serial.println("Rejoining the game...");
+  send_Join(); // Sende die `join`-Nachricht erneut
 }
