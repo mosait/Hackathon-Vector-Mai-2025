@@ -6,6 +6,7 @@
 const uint32_t hardware_ID = (*(RoReg *)0x008061FCUL);
 uint8_t player_ID = 0;
 uint8_t game_ID = 0;
+bool is_dead; 
 
 
 // Function prototypes
@@ -16,6 +17,10 @@ void process_GameState(uint8_t* data);
 void process_Error(uint8_t* data);
 void process_Die(uint8_t* data);
 void process_GameFinish(uint8_t* data);
+void send_Move(uint8_t direction);
+void send_Rename(const char* name, uint8_t size);
+void send_RenameFollow(const char* name);
+void onReceive(int packetSize);
 
 // CAN receive callback
 void onReceive(int packetSize) {
@@ -77,7 +82,6 @@ bool setupCan(long baudRate) {
 void setup() {
     Serial.begin(115200);
     //while (!Serial);
-
     
     Serial.println("Initializing CAN bus...");
     if (!setupCan(500000)) {
@@ -89,6 +93,7 @@ void setup() {
     CAN.onReceive(onReceive);
 
     delay(1000);
+    bool is_dead = false;
     send_Join();
 }
 
@@ -108,6 +113,11 @@ void send_Join(){
 }
 
 void send_GameAck() {
+  if (is_dead) {
+    Serial.println("Cannot send GameAck: Player is dead.");
+    return; // Nachricht nicht senden
+  }
+
   CAN.beginPacket(GameAck);
   CAN.write(player_ID); // Spieler-ID senden
   CAN.endPacket();
@@ -127,11 +137,19 @@ void rcv_Player(){
     //     player_ID = 0;
     // }
 
+    send_Rename("sucuk_", 6); // Send first 6 characters of the name
+    send_RenameFollow("mafia"); // Send next 7 characters of the name
+
     Serial.printf("Received Player packet | Player ID received: %u | Own Player ID: %u | Hardware ID received: %u | Own Hardware ID: %u\n", 
         msg_player.PlayerID, player_ID, msg_player.HardwareID, hardware_ID);
 }
 
 void send_Move(uint8_t direction) {
+  if (is_dead) {
+    Serial.println("Cannot send move: Player is dead.");
+    return; // Nachricht nicht senden
+  }
+
   CAN.beginPacket(Move);
   CAN.write(player_ID); // Spieler-ID
   CAN.write(direction); // Richtung: 1=UP, 2=RIGHT, 3=DOWN, 4=LEFT
@@ -157,6 +175,11 @@ void process_GameState(uint8_t* data) {
 }
 
 void send_Rename(const char* name, uint8_t size) {
+  if (is_dead) {
+    Serial.println("Cannot send Rename: Player is dead.");
+    return; // Nachricht nicht senden
+  }
+
   CAN.beginPacket(0x500); // FrameID for rename
   CAN.write(player_ID);
   CAN.write(size);
@@ -166,6 +189,11 @@ void send_Rename(const char* name, uint8_t size) {
 }
 
 void send_RenameFollow(const char* name) {
+  if (is_dead) {
+    Serial.println("Cannot send RenameFollow: Player is dead.");
+    return; // Nachricht nicht senden
+  }
+
   CAN.beginPacket(0x510); // FrameID for renamefollow
   CAN.write(player_ID);
   CAN.write((uint8_t*)name, 7); // Next 7 characters
@@ -203,7 +231,7 @@ void process_Die(uint8_t* data) {
 
   if (dead_player_id == player_ID) {
       Serial.println("You died! Game over.");
-      // Hier könnte man die Logik anpassen, z. B. keine weiteren Nachrichten senden
+      is_dead = true; // Spieler ist tot, keine Nachrichten mehr senden
   }
 }
 
