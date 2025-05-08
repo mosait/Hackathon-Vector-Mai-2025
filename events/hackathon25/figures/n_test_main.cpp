@@ -99,7 +99,7 @@ void send_Move(uint8_t direction);
 void send_Rename(const char* name, uint8_t size);
 void send_RenameFollow(const char* name);
 void onReceive(int packetSize);
-
+int countFreeSpace(uint8_t x, uint8_t y);
 // CAN receive callback
 void onReceive(int packetSize) {
   if (packetSize) {
