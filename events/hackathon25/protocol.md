@@ -51,7 +51,7 @@ The server's response message to a join message from a client acknowledges the j
 
 ### rename/renamefollow
 
-The player can set his/her name for display during the visualization of the game. The name us up to 20 ASCII characters long and can be set via two different messages:
+The player can set his/her name for display during the visualization of the game. The name us up to 20 ASCII characters long and can be set via two different messages: sucuk_mafia
 
 **Name:** rename  
 **Sender:** Client  

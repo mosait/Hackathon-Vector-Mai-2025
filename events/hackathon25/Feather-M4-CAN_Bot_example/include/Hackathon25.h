@@ -3,10 +3,17 @@
 
 #include <stdint.h>
 
+// CAN Message IDs
 enum CAN_MSGs {
     Join = 0x100,
-    Leave = 0x101,
-    Player = 0x110
+    Player = 0x110,
+    Game = 0x040,
+    GameAck = 0x120,
+    GameState = 0x050,
+    Move = 0x090,
+    Die = 0x080,
+    GameFinish = 0x070,
+    Error = 0x020
 };
 
 struct __attribute__((packed)) MSG_Join {
