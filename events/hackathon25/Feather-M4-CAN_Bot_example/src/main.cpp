@@ -84,7 +84,7 @@ std::vector<Position> findPath(uint8_t startX, uint8_t startY, uint8_t goalX, ui
 const uint32_t hardware_ID = (*(RoReg *)0x008061FCUL);
 uint8_t player_ID = 0;
 uint8_t game_ID = 0;
-bool is_dead = false; 
+bool is_dead; 
 
 
 // Function prototypes
@@ -236,61 +236,91 @@ void send_Move(uint8_t direction) {
 
 
 void process_GameState(uint8_t* data) {
-  uint8_t player1_x = data[0];
-  uint8_t player1_y = data[1];
-  uint8_t player2_x = data[2];
-  uint8_t player2_y = data[3];
-  uint8_t player3_x = data[4];
-  uint8_t player3_y = data[5];
-  uint8_t player4_x = data[6];
-  uint8_t player4_y = data[7];
+    uint8_t player1_x = data[0];
+    uint8_t player1_y = data[1];
+    uint8_t player2_x = data[2];
+    uint8_t player2_y = data[3];
+    uint8_t player3_x = data[4];
+    uint8_t player3_y = data[5];
+    uint8_t player4_x = data[6];
+    uint8_t player4_y = data[7];
 
-  // Hindernisse und Spielerpositionen aktualisieren
-  memset(grid, false, sizeof(grid)); // Spielfeld zurücksetzen
+    // Hindernisse und Spielerpositionen aktualisieren
+    memset(grid, false, sizeof(grid)); // Spielfeld zurücksetzen
 
-  // Spieler 1
-  if (player1_x != 255 && player1_y != 255) {
-      grid[player1_x][player1_y] = true;
-      player_traces[0].emplace_back(player1_x, player1_y);
-  }
+    // Spieler 1 (eigener Spieler)
+    if (player1_x != 255 && player1_y != 255) {
+        grid[player1_x][player1_y] = true;
+        player_traces[0].emplace_back(player1_x, player1_y);
+    }
 
-  // Spieler 2
-  if (player2_x != 255 && player2_y != 255) {
-      grid[player2_x][player2_y] = true;
-      player_traces[1].emplace_back(player2_x, player2_y);
-  }
+    // Spieler 2
+    if (player2_x != 255 && player2_y != 255) {
+        grid[player2_x][player2_y] = true;
+        player_traces[1].emplace_back(player2_x, player2_y);
+    }
 
-  // Spieler 3
-  if (player3_x != 255 && player3_y != 255) {
-      grid[player3_x][player3_y] = true;
-      player_traces[2].emplace_back(player3_x, player3_y);
-  }
+    // Spieler 3
+    if (player3_x != 255 && player3_y != 255) {
+        grid[player3_x][player3_y] = true;
+        player_traces[2].emplace_back(player3_x, player3_y);
+    }
 
-  // Spieler 4
-  if (player4_x != 255 && player4_y != 255) {
-      grid[player4_x][player4_y] = true;
-      player_traces[3].emplace_back(player4_x, player4_y);
-  }
+    // Spieler 4
+    if (player4_x != 255 && player4_y != 255) {
+        grid[player4_x][player4_y] = true;
+        player_traces[3].emplace_back(player4_x, player4_y);
+    }
 
-  // Zielposition basierend auf Platz berechnen
-  uint8_t goalX = (player1_x + 10) % GRID_WIDTH; // Beispiel: 10 Felder nach rechts
-  uint8_t goalY = (player1_y + 10) % GRID_HEIGHT; // Beispiel: 10 Felder nach oben
+    // Dynamische Zielsetzung: Suche nach dem größten freien Bereich
+    uint8_t goalX = player1_x;
+    uint8_t goalY = player1_y;
+    int maxFreeSpace = 0;
 
-  // A*-Pfad finden
-  std::vector<Position> path = findPath(player1_x, player1_y, goalX, goalY);
+    for (uint8_t x = 0; x < GRID_WIDTH; x++) {
+        for (uint8_t y = 0; y < GRID_HEIGHT; y++) {
+            if (!grid[x][y]) { // Freier Bereich
+                int freeSpace = countFreeSpace(x, y);
+                if (freeSpace > maxFreeSpace) {
+                    maxFreeSpace = freeSpace;
+                    goalX = x;
+                    goalY = y;
+                }
+            }
+        }
+    }
 
-  if (!path.empty()) {
-      // Nächste Bewegung bestimmen
-      Position nextMove = path[1]; // Der erste Schritt nach dem Start
-      if (nextMove.x > player1_x) send_Move(2); // RIGHT
-      else if (nextMove.x < player1_x) send_Move(4); // LEFT
-      else if (nextMove.y > player1_y) send_Move(3); // DOWN
-      else if (nextMove.y < player1_y) send_Move(1); // UP
-  } else {
-      // Keine Pfad gefunden, zufällige Bewegung als Fallback
-      Serial.println("No path found! Making a random move.");
-      send_Move(random(1, 5)); // Zufällige Richtung: 1=UP, 2=RIGHT, 3=DOWN, 4=LEFT
-  }
+    // A*-Pfad finden
+    std::vector<Position> path = findPath(player1_x, player1_y, goalX, goalY);
+
+    if (!path.empty()) {
+        // Nächste Bewegung bestimmen
+        Position nextMove = path[1]; // Der erste Schritt nach dem Start
+        if (nextMove.x > player1_x) send_Move(2); // RIGHT
+        else if (nextMove.x < player1_x) send_Move(4); // LEFT
+        else if (nextMove.y > player1_y) send_Move(3); // DOWN
+        else if (nextMove.y < player1_y) send_Move(1); // UP
+    } else {
+        // Keine Pfad gefunden, zufällige Bewegung als Fallback
+        Serial.println("No path found! Making a random move.");
+        send_Move(random(1, 5)); // Zufällige Richtung: 1=UP, 2=RIGHT, 3=DOWN, 4=LEFT
+    }
+}
+
+// Hilfsfunktion: Zähle freien Platz um eine Position
+int countFreeSpace(uint8_t x, uint8_t y) {
+    int freeSpace = 0;
+    const int dx[] = {0, 1, 0, -1};
+    const int dy[] = {-1, 0, 1, 0};
+
+    for (int i = 0; i < 4; i++) {
+        uint8_t nx = (x + dx[i] + GRID_WIDTH) % GRID_WIDTH; // Wrap-around
+        uint8_t ny = (y + dy[i] + GRID_HEIGHT) % GRID_HEIGHT; // Wrap-around
+        if (!grid[nx][ny]) {
+            freeSpace++;
+        }
+    }
+    return freeSpace;
 }
 
 void send_Rename(const char* name, uint8_t size) {
