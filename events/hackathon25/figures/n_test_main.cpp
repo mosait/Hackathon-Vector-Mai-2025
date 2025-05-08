@@ -1,425 +1,259 @@
+// Tron Game Client for Arduino using CAN bus
+// Improved: Reliable Join/GameAck logic, strategic movement, dead player handling, space evaluation
+
 #include <Arduino.h>
 #include <CAN.h>
 #include "Hackathon25.h"
-#include <queue>
 #include <vector>
-#include <cmath>
+#include <queue>
 #include <algorithm>
+#include <cmath>
 
-// Struktur für eine Position auf dem Spielfeld
 struct Position {
     uint8_t x, y;
-    float cost; // Gesamtkosten (g + h)
-    float g;    // Kosten vom Startpunkt
-    float h;    // Heuristik (geschätzte Kosten zum Ziel)
+    float g, h;
+    float cost;
     Position* parent;
 
     Position(uint8_t x, uint8_t y, float g, float h, Position* parent = nullptr)
-    : x(x), y(y), cost(g + h), g(g), h(h), parent(parent) {}
+        : x(x), y(y), g(g), h(h), cost(g + h), parent(parent) {}
 
     bool operator>(const Position& other) const {
         return cost > other.cost;
     }
 };
 
-// Spielfeldgröße
 const uint8_t GRID_WIDTH = 64;
 const uint8_t GRID_HEIGHT = 64;
+bool grid[GRID_WIDTH][GRID_HEIGHT] = {false};
+std::vector<std::pair<uint8_t, uint8_t>> player_traces[4];
 
-std::vector<std::pair<uint8_t, uint8_t>> player_traces[4]; 
+const uint32_t hardware_ID = (*(RoReg *)0x008061FCUL);
+uint8_t player_ID = 0;
+uint8_t game_ID = 0;
+bool is_dead = false;
+bool game_ack_sent = false;
+bool player_id_received = false;
 
-// Hindernisse und Spielerpositionen
-bool grid[GRID_WIDTH][GRID_HEIGHT] = {false}; // `true` bedeutet Hindernis
+// Movement memory
+uint8_t last_direction = 1; // UP by default
 
-// Hilfsfunktion: Berechne Manhattan-Distanz
+// Function Prototypes
+void send_Join();
+void send_GameAck();
+void send_Move(uint8_t direction);
+void send_Rename(const char* name, uint8_t size);
+void send_RenameFollow(const char* name);
+
+void process_GameState(uint8_t* data);
+void process_Die(uint8_t* data);
+void process_GameFinish(uint8_t* data);
+void process_Error(uint8_t* data);
+
 float heuristic(uint8_t x1, uint8_t y1, uint8_t x2, uint8_t y2) {
     return abs(x1 - x2) + abs(y1 - y2);
 }
 
-// Hilfsfunktion: Finde den kürzesten Weg mit A*
-std::vector<Position> findPath(uint8_t startX, uint8_t startY, uint8_t goalX, uint8_t goalY) {
-    std::priority_queue<Position, std::vector<Position>, std::greater<Position>> openSet;
-    bool closedSet[GRID_WIDTH][GRID_HEIGHT] = {false};
+std::vector<Position> findPath(uint8_t sx, uint8_t sy, uint8_t gx, uint8_t gy) {
+    std::priority_queue<Position, std::vector<Position>, std::greater<Position>> open;
+    bool closed[GRID_WIDTH][GRID_HEIGHT] = {false};
+    open.emplace(sx, sy, 0, heuristic(sx, sy, gx, gy));
 
-    openSet.emplace(startX, startY, 0, heuristic(startX, startY, goalX, goalY));
-
-
-    while (!openSet.empty()) {
-        Position current = openSet.top();
-        openSet.pop();
-
-        if (current.x == goalX && current.y == goalY) {
-            // Ziel erreicht, Pfad zurückverfolgen
+    while (!open.empty()) {
+        Position current = open.top(); open.pop();
+        if (current.x == gx && current.y == gy) {
             std::vector<Position> path;
-            for (Position* p = &current; p != nullptr; p = p->parent) {
+            for (Position* p = &current; p != nullptr; p = p->parent)
                 path.push_back(*p);
-            }
             std::reverse(path.begin(), path.end());
             return path;
         }
+        if (closed[current.x][current.y]) continue;
+        closed[current.x][current.y] = true;
 
-        if (closedSet[current.x][current.y]) continue;
-        closedSet[current.x][current.y] = true;
-
-        // Nachbarn prüfen
         const int dx[] = {0, 1, 0, -1};
         const int dy[] = {-1, 0, 1, 0};
-        for (int i = 0; i < 4; i++) {
-            uint8_t nx = (current.x + dx[i] + GRID_WIDTH) % GRID_WIDTH; // Wrap-around
-            uint8_t ny = (current.y + dy[i] + GRID_HEIGHT) % GRID_HEIGHT; // Wrap-around
-
-            if (!grid[nx][ny] && !closedSet[nx][ny]) {
-                float g = current.g + 1; // Kosten für Bewegung
-                float h = heuristic(nx, ny, goalX, goalY);
-                openSet.emplace(nx, ny, g, h, new Position(current));
+        for (int i = 0; i < 4; ++i) {
+            uint8_t nx = (current.x + dx[i] + GRID_WIDTH) % GRID_WIDTH;
+            uint8_t ny = (current.y + dy[i] + GRID_HEIGHT) % GRID_HEIGHT;
+            if (!grid[nx][ny] && !closed[nx][ny]) {
+                open.emplace(nx, ny, current.g + 1, heuristic(nx, ny, gx, gy), new Position(current));
             }
         }
     }
-
-    // Kein Pfad gefunden
     return {};
 }
 
-// Global variables
-const uint32_t hardware_ID = (*(RoReg *)0x008061FCUL);
-uint8_t player_ID = 0;
-uint8_t game_ID = 0;
-bool is_dead; 
-
-
-// Function prototypes
-void send_Join();
-void rcv_Player();
-void send_GameAck();
-void process_GameState(uint8_t* data);
-void process_Error(uint8_t* data);
-void process_Die(uint8_t* data);
-void process_GameFinish(uint8_t* data);
-void send_Move(uint8_t direction);
-void send_Rename(const char* name, uint8_t size);
-void send_RenameFollow(const char* name);
-void onReceive(int packetSize);
-int countFreeSpace(uint8_t x, uint8_t y);
-// CAN receive callback
-void onReceive(int packetSize) {
-  if (packetSize) {
-      switch (CAN.packetId()) {
-          case Player:
-              Serial.println("CAN: Received Player packet");
-              rcv_Player();
-              break;
-          case Game: { //bin/[
-              Serial.println("CAN: Received Game packet");
-
-              uint8_t game_data[8];
-              CAN.readBytes(game_data, sizeof(game_data));
-
-              uint8_t invited_players[4] = {
-                game_data[0],
-                game_data[1],
-                game_data[2],
-                game_data[3]
-              };
-
-              game_ID = game_data[4]; // Optional: if your protocol includes gameID in byte 4
-              is_dead = false; // Reset death flag at game start
-
-    // Check if this Arduino's player_ID is in the list
-              for (int i = 0; i < 4; i++) {
-                if (invited_players[i] == player_ID) {
-                  send_GameAck();  // Automatically acknowledge
-                  break;
-                } 
-              }
-
-            break;
-          }
-          case GameState:
-              Serial.println("CAN: Received GameState packet");
-              uint8_t data[8];
-              CAN.readBytes(data, sizeof(data));
-              process_GameState(data);
-              break;
-          case Die:
-              Serial.println("CAN: Received Die packet");
-              uint8_t die_data[1];
-              CAN.readBytes(die_data, sizeof(die_data));
-              process_Die(die_data);
-              break;
-          case GameFinish:
-              Serial.println("CAN: Received GameFinish packet");
-              uint8_t finish_data[8];
-              CAN.readBytes(finish_data, sizeof(finish_data));
-              process_GameFinish(finish_data);
-              break;
-          case Error:
-              Serial.println("CAN: Received Error packet");
-              uint8_t error_data[2];
-              CAN.readBytes(error_data, sizeof(error_data));
-              process_Error(error_data);
-              break;
-          default:
-              Serial.println("CAN: Received unknown packet");
-              break;
-      }
-  }
+int countFreeSpace(uint8_t x, uint8_t y) {
+    int free = 0;
+    const int dx[] = {0, 1, 0, -1};
+    const int dy[] = {-1, 0, 1, 0};
+    for (int i = 0; i < 4; ++i) {
+        uint8_t nx = (x + dx[i] + GRID_WIDTH) % GRID_WIDTH;
+        uint8_t ny = (y + dy[i] + GRID_HEIGHT) % GRID_HEIGHT;
+        if (!grid[nx][ny]) free++;
+    }
+    return free;
 }
 
-// CAN setup
+// CAN Communication
+void onReceive(int packetSize) {
+    if (!packetSize) return;
+    uint8_t id = CAN.packetId();
+    uint8_t data[8] = {0};
+    CAN.readBytes(data, packetSize);
+
+    switch (id) {
+        case Player:
+            if (*(uint32_t*)data == hardware_ID) {
+                player_ID = data[4];
+                player_id_received = true;
+                send_Rename("sucuk_", 6);
+                send_RenameFollow("mafia");
+            }
+            break;
+        case Game:
+            if (!game_ack_sent && player_id_received) {
+                send_GameAck();
+                game_ack_sent = true;
+            }
+            break;
+        case GameState:
+            if (!is_dead) process_GameState(data);
+            break;
+        case Die:
+            process_Die(data);
+            break;
+        case GameFinish:
+            process_GameFinish(data);
+            break;
+        case Error:
+            process_Error(data);
+            break;
+    }
+}
+
 bool setupCan(long baudRate) {
     pinMode(PIN_CAN_STANDBY, OUTPUT);
-    digitalWrite(PIN_CAN_STANDBY, false);
+    digitalWrite(PIN_CAN_STANDBY, LOW);
     pinMode(PIN_CAN_BOOSTEN, OUTPUT);
-    digitalWrite(PIN_CAN_BOOSTEN, true);
-
-    if (!CAN.begin(baudRate)) {
-        return false;
-    }
-    return true;
+    digitalWrite(PIN_CAN_BOOSTEN, HIGH);
+    return CAN.begin(baudRate);
 }
 
-// Setup
 void setup() {
     Serial.begin(115200);
-    //while (!Serial);
-    
-    Serial.println("Initializing CAN bus...");
-    if (!setupCan(500000)) {
-        Serial.println("Error: CAN initialization failed!");
-        while (1);
-    }
-    Serial.println("CAN bus initialized successfully."); 
-
+    while (!Serial);
+    if (!setupCan(500000)) while (1);
     CAN.onReceive(onReceive);
-
-    delay(1000);
     send_Join();
 }
 
-// Loop remains empty, logic is event-driven via CAN callback
 void loop() {}
 
-// Send JOIN packet via CAN
-void send_Join(){
-    MSG_Join msg_join;
-    msg_join.HardwareID = hardware_ID;
-
+// Core Functions
+void send_Join() {
+    MSG_Join j;
+    j.HardwareID = hardware_ID;
     CAN.beginPacket(Join);
-    CAN.write((uint8_t*)&msg_join, sizeof(MSG_Join));
+    CAN.write((uint8_t*)&j, sizeof(j));
     CAN.endPacket();
-
-    Serial.printf("JOIN packet sent (Hardware ID: %u)\n", hardware_ID);
 }
 
 void send_GameAck() {
-  if (is_dead) {
-    Serial.println("Cannot send GameAck: Player is dead.");
-    return; // Nachricht nicht senden
-  }
-
-  CAN.beginPacket(GameAck);
-  CAN.write(player_ID); // Spieler-ID senden
-  CAN.endPacket();
-  Serial.printf("GameAck sent for Player ID: %u\n", player_ID);
+    CAN.beginPacket(GameAck);
+    CAN.write(player_ID);
+    CAN.endPacket();
 }
 
-// Receive player information
-void rcv_Player(){
-    MSG_Player msg_player;
-    CAN.readBytes((uint8_t*)&msg_player, sizeof(MSG_Player));
-
-    if(msg_player.HardwareID == hardware_ID){
-        player_ID = msg_player.PlayerID;
-        Serial.printf("Player ID recieved\n");
-    }
-    //  else {
-    //     player_ID = 0;
-    // }
-
-    send_Rename("sucuk_", 6); // Send first 6 characters of the name
-    send_RenameFollow("mafia"); // Send next 7 characters of the name
-
-    Serial.printf("Received Player packet | Player ID received: %u | Own Player ID: %u | Hardware ID received: %u | Own Hardware ID: %u\n", 
-        msg_player.PlayerID, player_ID, msg_player.HardwareID, hardware_ID);
+void send_Move(uint8_t dir) {
+    if (dir == 0 || dir == last_direction || is_dead) return;
+    // prevent direct opposite
+    if ((last_direction == 1 && dir == 3) || (last_direction == 3 && dir == 1) ||
+        (last_direction == 2 && dir == 4) || (last_direction == 4 && dir == 2)) return;
+    CAN.beginPacket(Move);
+    CAN.write(player_ID);
+    CAN.write(dir);
+    CAN.endPacket();
+    last_direction = dir;
 }
 
-void send_Move(uint8_t direction) {
-  if (is_dead) {
-    Serial.println("Cannot send move: Player is dead.");
-    return; // Nachricht nicht senden
-  }
-
-  CAN.beginPacket(Move);
-  CAN.write(player_ID); // Spieler-ID
-  CAN.write(direction); // Richtung: 1=UP, 2=RIGHT, 3=DOWN, 4=LEFT
-  CAN.endPacket();
-  Serial.printf("Move sent: Player ID: %u, Direction: %u\n", player_ID, direction);
+void send_Rename(const char* name, uint8_t size) {
+    CAN.beginPacket(0x500);
+    CAN.write(player_ID);
+    CAN.write(size);
+    CAN.write((uint8_t*)name, size);
+    CAN.endPacket();
 }
 
+void send_RenameFollow(const char* name) {
+    CAN.beginPacket(0x510);
+    CAN.write(player_ID);
+    CAN.write((uint8_t*)name, 7);
+    CAN.endPacket();
+}
 
 void process_GameState(uint8_t* data) {
-    uint8_t player1_x = data[0];
-    uint8_t player1_y = data[1];
-    uint8_t player2_x = data[2];
-    uint8_t player2_y = data[3];
-    uint8_t player3_x = data[4];
-    uint8_t player3_y = data[5];
-    uint8_t player4_x = data[6];
-    uint8_t player4_y = data[7];
-
-    // Hindernisse und Spielerpositionen aktualisieren
-    memset(grid, false, sizeof(grid)); // Spielfeld zurücksetzen
-
-    // Spieler 1 (eigener Spieler)
-    if (player1_x != 255 && player1_y != 255) {
-        grid[player1_x][player1_y] = true;
-        player_traces[0].emplace_back(player1_x, player1_y);
+    uint8_t px[4], py[4];
+    for (int i = 0; i < 4; ++i) {
+        px[i] = data[i * 2];
+        py[i] = data[i * 2 + 1];
+        if (px[i] != 255 && py[i] != 255) {
+            grid[px[i]][py[i]] = true;
+            player_traces[i].emplace_back(px[i], py[i]);
+        }
     }
+    uint8_t sx = px[player_ID - 1];
+    uint8_t sy = py[player_ID - 1];
+    if (sx == 255 || sy == 255) return;
 
-    // Spieler 2
-    if (player2_x != 255 && player2_y != 255) {
-        grid[player2_x][player2_y] = true;
-        player_traces[1].emplace_back(player2_x, player2_y);
-    }
-
-    // Spieler 3
-    if (player3_x != 255 && player3_y != 255) {
-        grid[player3_x][player3_y] = true;
-        player_traces[2].emplace_back(player3_x, player3_y);
-    }
-
-    // Spieler 4
-    if (player4_x != 255 && player4_y != 255) {
-        grid[player4_x][player4_y] = true;
-        player_traces[3].emplace_back(player4_x, player4_y);
-    }
-
-    // Dynamische Zielsetzung: Suche nach dem größten freien Bereich
-    uint8_t goalX = player1_x;
-    uint8_t goalY = player1_y;
-    int maxFreeSpace = 0;
-
-    for (uint8_t x = 0; x < GRID_WIDTH; x++) {
-        for (uint8_t y = 0; y < GRID_HEIGHT; y++) {
-            if (!grid[x][y]) { // Freier Bereich
-                int freeSpace = countFreeSpace(x, y);
-                if (freeSpace > maxFreeSpace) {
-                    maxFreeSpace = freeSpace;
-                    goalX = x;
-                    goalY = y;
+    uint8_t bestX = sx, bestY = sy;
+    int maxSpace = -1;
+    for (uint8_t x = 0; x < GRID_WIDTH; ++x) {
+        for (uint8_t y = 0; y < GRID_HEIGHT; ++y) {
+            if (!grid[x][y]) {
+                int space = countFreeSpace(x, y);
+                if (space > maxSpace) {
+                    bestX = x;
+                    bestY = y;
+                    maxSpace = space;
                 }
             }
         }
     }
 
-    // A*-Pfad finden
-    std::vector<Position> path = findPath(player1_x, player1_y, goalX, goalY);
-
-    if (!path.empty()) {
-        // Nächste Bewegung bestimmen
-        Position nextMove = path[1]; // Der erste Schritt nach dem Start
-        if (nextMove.x > player1_x) send_Move(2); // RIGHT
-        else if (nextMove.x < player1_x) send_Move(4); // LEFT
-        else if (nextMove.y > player1_y) send_Move(3); // DOWN
-        else if (nextMove.y < player1_y) send_Move(1); // UP
+    auto path = findPath(sx, sy, bestX, bestY);
+    if (path.size() >= 2) {
+        auto next = path[1];
+        if (next.x > sx) send_Move(2);
+        else if (next.x < sx) send_Move(4);
+        else if (next.y > sy) send_Move(3);
+        else if (next.y < sy) send_Move(1);
     } else {
-        // Keine Pfad gefunden, zufällige Bewegung als Fallback
-        Serial.println("No path found! Making a random move.");
-        send_Move(random(1, 5)); // Zufällige Richtung: 1=UP, 2=RIGHT, 3=DOWN, 4=LEFT
+        send_Move((random(1, 5))); // Fallback
     }
-}
-
-// Hilfsfunktion: Zähle freien Platz um eine Position
-int countFreeSpace(uint8_t x, uint8_t y) {
-    int freeSpace = 0;
-    const int dx[] = {0, 1, 0, -1};
-    const int dy[] = {-1, 0, 1, 0};
-
-    for (int i = 0; i < 4; i++) {
-        uint8_t nx = (x + dx[i] + GRID_WIDTH) % GRID_WIDTH; // Wrap-around
-        uint8_t ny = (y + dy[i] + GRID_HEIGHT) % GRID_HEIGHT; // Wrap-around
-        if (!grid[nx][ny]) {
-            freeSpace++;
-        }
-    }
-    return freeSpace;
-}
-
-void send_Rename(const char* name, uint8_t size) {
-  if (is_dead) {
-    Serial.println("Cannot send Rename: Player is dead.");
-    return; // Nachricht nicht senden
-  }
-
-  CAN.beginPacket(0x500); // FrameID for rename
-  CAN.write(player_ID);
-  CAN.write(size);
-  CAN.write((uint8_t*)name, 6); // First 6 characters
-  CAN.endPacket();
-  Serial.printf("Rename sent: Player ID: %u, Name: %.6s\n", player_ID, name);
-}
-
-void send_RenameFollow(const char* name) {
-  if (is_dead) {
-    Serial.println("Cannot send RenameFollow: Player is dead.");
-    return; // Nachricht nicht senden
-  }
-
-  CAN.beginPacket(0x510); // FrameID for renamefollow
-  CAN.write(player_ID);
-  CAN.write((uint8_t*)name, 7); // Next 7 characters
-  CAN.endPacket();
-  Serial.printf("RenameFollow sent: Player ID: %u, Name: %.7s\n", player_ID, name);
-}
-
-void process_Error(uint8_t* data) {
-  uint8_t player_id = data[0];
-  uint8_t error_code = data[1];
-  Serial.printf("Error received: Player ID: %u, Error Code: %u\n", player_id, error_code);
-
-  switch (error_code) {
-      case 1:
-          Serial.println("ERROR_INVALID_PLAYER_ID: Invalid Player ID.");
-          break;
-      case 2:
-          Serial.println("ERROR_UNALLOWED_RENAME: Rename not allowed.");
-          break;
-      case 3:
-          Serial.println("ERROR_YOU_ARE_NOT_PLAYING: Player is not in the game.");
-          break;
-      case 4:
-          Serial.println("WARNING_UNKNOWN_MOVE: Invalid move direction.");
-          break;
-      default:
-          Serial.println("Unknown error.");
-          break;
-  }
 }
 
 void process_Die(uint8_t* data) {
-  uint8_t dead_player_id = data[0];
-  Serial.printf("Player %u died\n", dead_player_id);
-
-  if (dead_player_id == player_ID) {
-      Serial.println("You died! Game over.");
-      is_dead = true; // Spieler ist tot, keine Nachrichten mehr senden
-  }
-
-  // Traces des gestorbenen Spielers freigeben
-  if (dead_player_id >= 1 && dead_player_id <= 4) {
-      for (const auto& trace : player_traces[dead_player_id - 1]) {
-          grid[trace.first][trace.second] = false; // Bereich freigeben
-      }
-      player_traces[dead_player_id - 1].clear(); // Traces löschen
-      Serial.printf("Traces for Player %u cleared.\n", dead_player_id);
-  }
+    uint8_t id = data[0];
+    if (id == player_ID) is_dead = true;
+    if (id >= 1 && id <= 4) {
+        for (auto& pos : player_traces[id - 1])
+            grid[pos.first][pos.second] = false;
+        player_traces[id - 1].clear();
+    }
 }
 
 void process_GameFinish(uint8_t* data) {
-  Serial.println("Game finished. Points distribution:");
-  for (int i = 0; i < 4; i++) {
-      uint8_t player_id = data[i * 2];
-      uint8_t points = data[i * 2 + 1];
-      Serial.printf("Player %u: %u points\n", player_id, points);
-  }
+    is_dead = false;
+    last_direction = 1;
+    game_ack_sent = false;
+    memset(grid, 0, sizeof(grid));
+    for (int i = 0; i < 4; ++i) player_traces[i].clear();
+    send_Join();
+}
+
+void process_Error(uint8_t* data) {
+    Serial.printf("Error: Player %u, Code %u\n", data[0], data[1]);
+    if (data[1] == 1) send_Join();
 }
