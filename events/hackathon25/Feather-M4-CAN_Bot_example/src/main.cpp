@@ -394,7 +394,7 @@ void process_GameFinish(uint8_t* data) {
       player_traces[i].clear(); // Traces aller Spieler löschen
   }
 
-  // Automatisch erneut dem Spiel beitreten
+  // Erneut dem Spiel beitreten
   Serial.println("Rejoining the game...");
   send_Join(); // Sende die `join`-Nachricht erneut
 }
