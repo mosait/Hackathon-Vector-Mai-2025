@@ -1,6 +1,84 @@
 #include <Arduino.h>
 #include <CAN.h>
 #include "Hackathon25.h"
+#include <queue>
+#include <vector>
+#include <cmath>
+#include <algorithm>
+
+// Struktur für eine Position auf dem Spielfeld
+struct Position {
+    uint8_t x, y;
+    float cost; // Gesamtkosten (g + h)
+    float g;    // Kosten vom Startpunkt
+    float h;    // Heuristik (geschätzte Kosten zum Ziel)
+    Position* parent;
+
+    Position(uint8_t x, uint8_t y, float g, float h, Position* parent = nullptr)
+    : x(x), y(y), cost(g + h), g(g), h(h), parent(parent) {}
+
+    bool operator>(const Position& other) const {
+        return cost > other.cost;
+    }
+};
+
+// Spielfeldgröße
+const uint8_t GRID_WIDTH = 64;
+const uint8_t GRID_HEIGHT = 64;
+
+std::vector<std::pair<uint8_t, uint8_t>> player_traces[4]; 
+
+// Hindernisse und Spielerpositionen
+bool grid[GRID_WIDTH][GRID_HEIGHT] = {false}; // `true` bedeutet Hindernis
+
+// Hilfsfunktion: Berechne Manhattan-Distanz
+float heuristic(uint8_t x1, uint8_t y1, uint8_t x2, uint8_t y2) {
+    return abs(x1 - x2) + abs(y1 - y2);
+}
+
+// Hilfsfunktion: Finde den kürzesten Weg mit A*
+std::vector<Position> findPath(uint8_t startX, uint8_t startY, uint8_t goalX, uint8_t goalY) {
+    std::priority_queue<Position, std::vector<Position>, std::greater<Position>> openSet;
+    bool closedSet[GRID_WIDTH][GRID_HEIGHT] = {false};
+
+    openSet.emplace(startX, startY, 0, heuristic(startX, startY, goalX, goalY));
+
+
+    while (!openSet.empty()) {
+        Position current = openSet.top();
+        openSet.pop();
+
+        if (current.x == goalX && current.y == goalY) {
+            // Ziel erreicht, Pfad zurückverfolgen
+            std::vector<Position> path;
+            for (Position* p = &current; p != nullptr; p = p->parent) {
+                path.push_back(*p);
+            }
+            std::reverse(path.begin(), path.end());
+            return path;
+        }
+
+        if (closedSet[current.x][current.y]) continue;
+        closedSet[current.x][current.y] = true;
+
+        // Nachbarn prüfen
+        const int dx[] = {0, 1, 0, -1};
+        const int dy[] = {-1, 0, 1, 0};
+        for (int i = 0; i < 4; i++) {
+            uint8_t nx = (current.x + dx[i] + GRID_WIDTH) % GRID_WIDTH; // Wrap-around
+            uint8_t ny = (current.y + dy[i] + GRID_HEIGHT) % GRID_HEIGHT; // Wrap-around
+
+            if (!grid[nx][ny] && !closedSet[nx][ny]) {
+                float g = current.g + 1; // Kosten für Bewegung
+                float h = heuristic(nx, ny, goalX, goalY);
+                openSet.emplace(nx, ny, g, h, new Position(current));
+            }
+        }
+    }
+
+    // Kein Pfad gefunden
+    return {};
+}
 
 // Global variables
 const uint32_t hardware_ID = (*(RoReg *)0x008061FCUL);
@@ -93,7 +171,6 @@ void setup() {
     CAN.onReceive(onReceive);
 
     delay(1000);
-    bool is_dead = false;
     send_Join();
 }
 
@@ -157,6 +234,7 @@ void send_Move(uint8_t direction) {
   Serial.printf("Move sent: Player ID: %u, Direction: %u\n", player_ID, direction);
 }
 
+
 void process_GameState(uint8_t* data) {
   uint8_t player1_x = data[0];
   uint8_t player1_y = data[1];
@@ -167,11 +245,52 @@ void process_GameState(uint8_t* data) {
   uint8_t player4_x = data[6];
   uint8_t player4_y = data[7];
 
-  Serial.printf("GameState received: P1(%u,%u), P2(%u,%u), P3(%u,%u), P4(%u,%u)\n",
-                player1_x, player1_y, player2_x, player2_y, player3_x, player3_y, player4_x, player4_y);
+  // Hindernisse und Spielerpositionen aktualisieren
+  memset(grid, false, sizeof(grid)); // Spielfeld zurücksetzen
 
-  // Beispiel: Bewegung nach rechts senden
-  send_Move(2); // 2 = RIGHT
+  // Spieler 1
+  if (player1_x != 255 && player1_y != 255) {
+      grid[player1_x][player1_y] = true;
+      player_traces[0].emplace_back(player1_x, player1_y);
+  }
+
+  // Spieler 2
+  if (player2_x != 255 && player2_y != 255) {
+      grid[player2_x][player2_y] = true;
+      player_traces[1].emplace_back(player2_x, player2_y);
+  }
+
+  // Spieler 3
+  if (player3_x != 255 && player3_y != 255) {
+      grid[player3_x][player3_y] = true;
+      player_traces[2].emplace_back(player3_x, player3_y);
+  }
+
+  // Spieler 4
+  if (player4_x != 255 && player4_y != 255) {
+      grid[player4_x][player4_y] = true;
+      player_traces[3].emplace_back(player4_x, player4_y);
+  }
+
+  // Zielposition basierend auf Platz berechnen
+  uint8_t goalX = (player1_x + 10) % GRID_WIDTH; // Beispiel: 10 Felder nach rechts
+  uint8_t goalY = (player1_y + 10) % GRID_HEIGHT; // Beispiel: 10 Felder nach oben
+
+  // A*-Pfad finden
+  std::vector<Position> path = findPath(player1_x, player1_y, goalX, goalY);
+
+  if (!path.empty()) {
+      // Nächste Bewegung bestimmen
+      Position nextMove = path[1]; // Der erste Schritt nach dem Start
+      if (nextMove.x > player1_x) send_Move(2); // RIGHT
+      else if (nextMove.x < player1_x) send_Move(4); // LEFT
+      else if (nextMove.y > player1_y) send_Move(3); // DOWN
+      else if (nextMove.y < player1_y) send_Move(1); // UP
+  } else {
+      // Keine Pfad gefunden, zufällige Bewegung als Fallback
+      Serial.println("No path found! Making a random move.");
+      send_Move(random(1, 5)); // Zufällige Richtung: 1=UP, 2=RIGHT, 3=DOWN, 4=LEFT
+  }
 }
 
 void send_Rename(const char* name, uint8_t size) {
@@ -232,6 +351,15 @@ void process_Die(uint8_t* data) {
   if (dead_player_id == player_ID) {
       Serial.println("You died! Game over.");
       is_dead = true; // Spieler ist tot, keine Nachrichten mehr senden
+  }
+
+  // Traces des gestorbenen Spielers freigeben
+  if (dead_player_id >= 1 && dead_player_id <= 4) {
+      for (const auto& trace : player_traces[dead_player_id - 1]) {
+          grid[trace.first][trace.second] = false; // Bereich freigeben
+      }
+      player_traces[dead_player_id - 1].clear(); // Traces löschen
+      Serial.printf("Traces for Player %u cleared.\n", dead_player_id);
   }
 }
 
