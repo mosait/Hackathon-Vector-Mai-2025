@@ -1,0 +1,23 @@
+#ifndef GAME_LOGIC_H
+#define GAME_LOGIC_H
+
+#include <Arduino.h>
+#include <vector>
+
+struct Position {
+    uint8_t x, y;
+    Position(uint8_t x = 0, uint8_t y = 0) : x(x), y(y) {}
+};
+
+float distanceWithWrap(uint8_t x1, uint8_t y1, uint8_t x2, uint8_t y2);
+int floodFill(uint8_t startX, uint8_t startY, bool tempGrid[][64]);
+void process_GameState(uint8_t *data);
+void process_Die(uint8_t *data);
+void process_GameFinish(uint8_t *data);
+void process_Error(uint8_t *data);
+
+// Shared state
+extern bool grid[64][64];
+extern std::vector<std::pair<uint8_t, uint8_t>> player_traces[4];
+
+#endif
