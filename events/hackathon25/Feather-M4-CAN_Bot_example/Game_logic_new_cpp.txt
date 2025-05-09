@@ -1,0 +1,167 @@
+#include "GameLogic.h"
+#include "CANHandler.h"
+#include <queue>
+#include <algorithm>
+#include <cstring>
+
+const uint8_t GRID_WIDTH = 64;
+const uint8_t GRID_HEIGHT = 64;
+
+bool grid[GRID_WIDTH][GRID_HEIGHT] = {false};
+std::vector<std::pair<uint8_t, uint8_t>> player_traces[4];
+
+const int UP = 1, RIGHT = 2, DOWN = 3, LEFT = 4;
+const int dx[] = {0, 1, 0, -1};
+const int dy[] = {-1, 0, 1, 0};
+
+uint8_t last_direction = UP;
+uint8_t my_player_index = 0;
+
+float distanceWithWrap(uint8_t x1, uint8_t y1, uint8_t x2, uint8_t y2) {
+    int dx = abs((int)x1 - (int)x2);
+    int dy = abs((int)y1 - (int)y2);
+    dx = std::min(dx, GRID_WIDTH - dx);
+    dy = std::min(dy, GRID_HEIGHT - dy);
+    return dx + dy;
+}
+
+int floodFill(uint8_t x, uint8_t y, bool tempGrid[][64]) {
+    bool visited[64][64] = {false};
+    std::queue<std::pair<uint8_t, uint8_t>> q;
+    q.push({x, y});
+    visited[x][y] = true;
+    int area = 0;
+
+    while (!q.empty()) {
+        auto [cx, cy] = q.front(); q.pop();
+        area++;
+        for (int d = 0; d < 4; ++d) {
+            uint8_t nx = (cx + dx[d] + GRID_WIDTH) % GRID_WIDTH;
+            uint8_t ny = (cy + dy[d] + GRID_HEIGHT) % GRID_HEIGHT;
+            if (!visited[nx][ny] && !tempGrid[nx][ny]) {
+                visited[nx][ny] = true;
+                q.push({nx, ny});
+            }
+        }
+    }
+    return area;
+}
+
+bool isInsideGrid(int x, int y) {
+    return x >= 0 && x < GRID_WIDTH && y >= 0 && y < GRID_HEIGHT;
+}
+
+bool isCellLethal(int x, int y) {
+    if (!isInsideGrid(x, y)) return true;
+
+    // You need a grid/trace mapping to know which player owns this trace
+    if (!grid[x][y]) return false;
+
+    return true; // Placeholder logic: assumes all traces are lethal
+}
+
+bool isCellOccupiedForFuture(int x, int y) {
+    if (!isInsideGrid(x, y)) return true;
+
+    // Your logic for future occupation here
+    int playerId = -1; // Placeholder
+    if (playerId == -1) return false;
+
+    return justDiedThisTick.count(playerId) == 0;
+}
+
+bool isReverse(uint8_t newDir, uint8_t lastDir) {
+    return (newDir == UP && lastDir == DOWN) ||
+           (newDir == DOWN && lastDir == UP) ||
+           (newDir == LEFT && lastDir == RIGHT) ||
+           (newDir == RIGHT && lastDir == LEFT);
+}
+
+float scoreMove(uint8_t x, uint8_t y, uint8_t direction) {
+    if (isReverse(direction, last_direction)) return -10000;
+
+    uint8_t nx = (x + dx[direction - 1] + GRID_WIDTH) % GRID_WIDTH;
+    uint8_t ny = (y + dy[direction - 1] + GRID_HEIGHT) % GRID_HEIGHT;
+    if (isCellLethal(nx, ny)) return -10000;
+
+    bool tempGrid[64][64];
+    memcpy(tempGrid, grid, sizeof(grid));
+    tempGrid[nx][ny] = true;
+    int space = floodFill(nx, ny, tempGrid);
+
+    int wallTouches = 0;
+    for (int i = 0; i < 4; ++i) {
+        uint8_t adjx = (nx + dx[i] + GRID_WIDTH) % GRID_WIDTH;
+        uint8_t adjy = (ny + dy[i] + GRID_HEIGHT) % GRID_HEIGHT;
+        if (grid[adjx][adjy]) wallTouches++;
+    }
+
+    return space * 10 + wallTouches * 2;
+}
+
+void process_GameState(uint8_t *data) {
+    uint8_t px[4] = { data[0], data[2], data[4], data[6] };
+    uint8_t py[4] = { data[1], data[3], data[5], data[7] };
+
+    my_player_index = player_ID - 1;
+    memset(grid, false, sizeof(grid));
+
+    for (int i = 0; i < 4; ++i) {
+        if (px[i] != 255 && py[i] != 255) {
+            grid[px[i]][py[i]] = true;
+            player_traces[i].emplace_back(px[i], py[i]);
+        }
+    }
+
+    if (player_traces[my_player_index].empty()) {
+        Serial.println("ERROR: Player position not initialized.");
+        return;
+    }
+
+    auto [x, y] = player_traces[my_player_index].back();
+    float bestScore = -1e6;
+    uint8_t bestDir = 0;
+
+    for (uint8_t dir = 1; dir <= 4; ++dir) {
+        float s = scoreMove(x, y, dir);
+        if (s > bestScore) {
+            bestScore = s;
+            bestDir = dir;
+        }
+    }
+
+    if (bestDir > 0) {
+        send_Move(bestDir);
+        last_direction = bestDir;
+    } else {
+        Serial.println("CRITICAL: No valid move found.");
+    }
+}
+
+void process_Die(uint8_t *data) {
+    uint8_t id = data[0];
+    if (id == player_ID) is_dead = true;
+    if (id >= 1 && id <= 4) {
+        for (auto &pos : player_traces[id - 1])
+            grid[pos.first][pos.second] = false;
+        player_traces[id - 1].clear();
+    }
+}
+
+void process_GameFinish(uint8_t *data) {
+    Serial.println("Game over. Scores:");
+    for (int i = 0; i < 4; i++) {
+        Serial.printf("Player %u: %u points\n", data[i*2], data[i*2+1]);
+    }
+    memset(grid, false, sizeof(grid));
+    for (int i = 0; i < 4; i++) player_traces[i].clear();
+    is_dead = false;
+    last_direction = UP;
+    send_Join();
+}
+
+void process_Error(uint8_t *data) {
+    uint8_t id = data[0];
+    uint8_t code = data[1];
+    Serial.printf("Error: Player %u, Code %u\n", id, code);
+}
