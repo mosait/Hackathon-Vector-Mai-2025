@@ -3,10 +3,20 @@
 
 #include <Arduino.h>
 #include <vector>
+#include <unordered_set>
 
 struct Position {
     uint8_t x, y;
     Position(uint8_t x = 0, uint8_t y = 0) : x(x), y(y) {}
+};
+
+struct Player {
+    uint8_t id;
+    Position pos;
+    bool alive;
+
+    Player(uint8_t id = 0, Position pos = Position(), bool alive = true)
+        : id(id), pos(pos), alive(alive) {}
 };
 
 float distanceWithWrap(uint8_t x1, uint8_t y1, uint8_t x2, uint8_t y2);
@@ -19,5 +29,7 @@ void process_Error(uint8_t *data);
 // Shared state
 extern bool grid[64][64];
 extern std::vector<std::pair<uint8_t, uint8_t>> player_traces[4];
+extern std::unordered_set<int> justDiedThisTick;
+extern std::vector<Player> previous_players;
 
 #endif
