@@ -2,153 +2,115 @@
 #include "GameLogic.h"
 #include "CANHandler.h"
 #include <queue>
-#include <functional>
-#include <algorithm>
+#include <cstring>
 
 // Constants for grid dimensions
 const uint8_t GRID_WIDTH = 64;
 const uint8_t GRID_HEIGHT = 64;
+std::vector<std::pair<uint8_t, uint8_t>> player_traces[4]; // Tracks movement history of all players
 
 // Game state storage
-bool grid[GRID_WIDTH][GRID_HEIGHT] = {false};              // Grid representation: true = occupied, false = free
-std::vector<std::pair<uint8_t, uint8_t>> player_traces[4]; // Stores movement history of all players
+bool grid[GRID_WIDTH][GRID_HEIGHT] = {false}; // Grid representation: true = occupied, false = free
+uint8_t last_direction = 1;                  // Start with UP as default direction
 
-// Movement state tracking
-uint8_t last_direction = 1;  // Start with UP as default direction
-uint8_t my_player_index = 0; // Will be set based on player_ID (player_ID - 1)
+// Direction vectors
+const int dx[] = {0, 1, 0, -1}; // UP, RIGHT, DOWN, LEFT
+const int dy[] = {-1, 0, 1, 0};
 
-// Define direction constants and movement vectors
-const int UP = 1, RIGHT = 2, DOWN = 3, LEFT = 4;
-const int dx[] = {0, 1, 0, -1}; // Direction vectors for UP, RIGHT, DOWN, LEFT
-const int dy[] = {-1, 0, 1, 0}; // Direction vectors for UP, RIGHT, DOWN, LEFT
-
-
-int floodFill(uint8_t startX, uint8_t startY, bool tempGrid[][64])
+/**
+ * Flood fill to calculate accessible area from a given position.
+ *
+ * @param x Starting x-coordinate
+ * @param y Starting y-coordinate
+ * @return Number of accessible cells
+ */
+int calculateAccessibleArea(uint8_t x, uint8_t y)
 {
-    // Create a local copy of the grid to track visited cells
     bool visited[GRID_WIDTH][GRID_HEIGHT] = {false};
-
     std::queue<std::pair<uint8_t, uint8_t>> q;
-    q.push({startX, startY});
-    int count = 0;
+    q.push({x, y});
+    visited[x][y] = true;
+
+    int area = 0;
 
     while (!q.empty())
     {
-        auto [x, y] = q.front();
+        auto [cx, cy] = q.front();
         q.pop();
+        area++;
 
-        // Skip if already visited or occupied
-        if (visited[x][y] || tempGrid[x][y])
-            continue;
-
-        // Mark as visited
-        visited[x][y] = true;
-        count++;
-
-        // Explore all 4 directions
-        for (int dir = 0; dir < 4; dir++)
+        for (int i = 0; i < 4; i++)
         {
-            uint8_t nx = (x + dx[dir] + GRID_WIDTH) % GRID_WIDTH;
-            uint8_t ny = (y + dy[dir] + GRID_HEIGHT) % GRID_HEIGHT;
+            uint8_t nx = (cx + dx[i] + GRID_WIDTH) % GRID_WIDTH;
+            uint8_t ny = (cy + dy[i] + GRID_HEIGHT) % GRID_HEIGHT;
 
-            if (!visited[nx][ny] && !tempGrid[nx][ny]) // Only add unvisited and free cells
+            if (!visited[nx][ny] && !grid[nx][ny])
+            {
+                visited[nx][ny] = true;
                 q.push({nx, ny});
+            }
         }
     }
 
-    return count;
+    return area;
 }
 
 /**
- * Evaluates the quality of a potential move using simple rules
+ * Evaluates a move based on collision avoidance and accessible area.
  *
- * @param x, y Current position of our player
- * @param direction Direction to evaluate (UP/RIGHT/DOWN/LEFT)
- * @return Score for the move (higher is better)
+ * @param x Current x-coordinate
+ * @param y Current y-coordinate
+ * @param direction Direction to evaluate (1=UP, 2=RIGHT, 3=DOWN, 4=LEFT)
+ * @return Score for the move
  */
 float evaluateMove(uint8_t x, uint8_t y, uint8_t direction)
 {
     uint8_t nx = (x + dx[direction - 1] + GRID_WIDTH) % GRID_WIDTH;
     uint8_t ny = (y + dy[direction - 1] + GRID_HEIGHT) % GRID_HEIGHT;
 
+    // Check for collision
     if (grid[nx][ny])
-    {
-        return -1000.0f; // Collision penalty
-    }
+        return -1000.0f; // High penalty for collisions
 
-    bool tempGrid[GRID_WIDTH][GRID_HEIGHT];
-    memcpy(tempGrid, grid, sizeof(grid));
-    tempGrid[nx][ny] = true;
-    int accessibleSpace = floodFill(nx, ny, tempGrid);
-
-    float score = accessibleSpace * 10.0f; // Prioritize open space
-    if (direction == last_direction)
-        score += 5.0f; // Bonus for continuing in the same direction
-    if (abs(direction - last_direction) == 2)
-        score -= 2000.0f; // High penalty for 180° turns
-
-    return score;
+    // Calculate accessible area
+    return calculateAccessibleArea(nx, ny);
 }
 
 /**
- * Processes game state updates and selects the best move
+ * Processes game state updates and selects the best move.
  *
  * @param data Game state data received via CAN bus
  */
 void process_GameState(uint8_t *data)
 {
-    // Parse player positions from data packet
-    uint8_t player1_x = data[0];
-    uint8_t player1_y = data[1];
-    uint8_t player2_x = data[2];
-    uint8_t player2_y = data[3];
-    uint8_t player3_x = data[4];
-    uint8_t player3_y = data[5];
-    uint8_t player4_x = data[6];
-    uint8_t player4_y = data[7];
+    // Parse player positions
+    uint8_t player_positions[4][2] = {
+        {data[0], data[1]},
+        {data[2], data[3]},
+        {data[4], data[5]},
+        {data[6], data[7]}};
 
-    // Calculate our player index (0-3) from player_ID (1-4)
-    my_player_index = player_ID - 1;
-
-    // Reset the grid to start fresh
+    // Update grid
     memset(grid, false, sizeof(grid));
-
-    // Lambda to update player positions and traces
-    auto updatePlayerPosition = [&](uint8_t x, uint8_t y, int playerIndex)
+    for (int i = 0; i < 4; i++)
     {
-        if (x != 255 && y != 255) // Valid position (player is alive)
+        if (player_positions[i][0] != 255 && player_positions[i][1] != 255)
         {
-            grid[x][y] = true; // Mark occupied cell
-            player_traces[playerIndex].emplace_back(x, y); // Add to trace history
-            Serial.printf("Player %d occupies (%u, %u)\n", playerIndex + 1, x, y); // Debug log
+            grid[player_positions[i][0]][player_positions[i][1]] = true;
         }
-    };
-
-    // Update all player positions
-    updatePlayerPosition(player1_x, player1_y, 0);
-    updatePlayerPosition(player2_x, player2_y, 1);
-    updatePlayerPosition(player3_x, player3_y, 2);
-    updatePlayerPosition(player4_x, player4_y, 3);
-
-    // Get our current position
-    if (player_traces[my_player_index].empty())
-    {
-        Serial.println("ERROR: My player position not found!");
-        return;
     }
 
-    uint8_t myX = player_traces[my_player_index].back().first;
-    uint8_t myY = player_traces[my_player_index].back().second;
+    // Get our current position
+    uint8_t myX = player_positions[player_ID - 1][0];
+    uint8_t myY = player_positions[player_ID - 1][1];
 
-    // Evaluate all four possible moves
+    // Evaluate all possible moves
     float best_score = -1000.0f;
     uint8_t best_direction = 0;
 
     for (uint8_t dir = 1; dir <= 4; dir++)
     {
         float score = evaluateMove(myX, myY, dir);
-        Serial.printf("Direction: %u, Score: %.2f\n", dir, score); // Debug log
-
         if (score > best_score)
         {
             best_score = score;
@@ -156,24 +118,11 @@ void process_GameState(uint8_t *data)
         }
     }
 
-    // Send the move command if we found a valid direction
+    // Send the best move
     if (best_direction > 0)
     {
-        Serial.printf("Best Direction: %u, Best Score: %.2f\n", best_direction, best_score); // Debug log
         send_Move(best_direction);
-        last_direction = best_direction; // Update our direction tracking
-    }
-    else
-    {
-        Serial.println("No valid moves available. Attempting least risky move...");
-        for (uint8_t dir = 1; dir <= 4; dir++)
-        {
-            if (evaluateMove(myX, myY, dir) > -1000.0f)
-            {
-                best_direction = dir;
-                break;
-            }
-        }
+        last_direction = best_direction;
     }
 }
 
