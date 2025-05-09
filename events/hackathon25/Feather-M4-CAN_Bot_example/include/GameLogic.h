@@ -90,12 +90,6 @@ void process_GameState(uint8_t *data);
  * @param data Death message data
  */
 void process_Die(uint8_t *data);
-
-/**
- * Processes game finish messages and resets game state
- *
- * @param data Game finish data containing points distribution
- */
 void process_GameFinish(uint8_t *data);
 
 /**

@@ -17,132 +17,50 @@ std::vector<std::pair<uint8_t, uint8_t>> player_traces[4]; // Stores movement hi
 uint8_t last_direction = 1;  // Start with UP as default direction
 uint8_t my_player_index = 0; // Will be set based on player_ID (player_ID - 1)
 
-// Define direction constants and movement vectors for clarity
+// Define direction constants and movement vectors
 const int UP = 1, RIGHT = 2, DOWN = 3, LEFT = 4;
 const int dx[] = {0, 1, 0, -1}; // Direction vectors for UP, RIGHT, DOWN, LEFT
 const int dy[] = {-1, 0, 1, 0}; // Direction vectors for UP, RIGHT, DOWN, LEFT
 
-/**
- * Calculates Manhattan distance between two points considering grid wrap-around
- *
- * @param x1, y1 First point coordinates
- * @param x2, y2 Second point coordinates
- * @return Manhattan distance accounting for grid wrap-around
- */
-float distanceWithWrap(uint8_t x1, uint8_t y1, uint8_t x2, uint8_t y2)
+
+int floodFill(uint8_t startX, uint8_t startY, bool tempGrid[][64])
 {
-    // Calculate absolute differences
-    int dx = abs((int)x1 - (int)x2);
-    int dy = abs((int)y1 - (int)y2);
+    // Create a local copy of the grid to track visited cells
+    bool visited[GRID_WIDTH][GRID_HEIGHT] = {false};
 
-    // Consider wrap-around distance (shorter path may be across grid edges)
-    dx = min(dx, GRID_WIDTH - dx);
-    dy = min(dy, GRID_HEIGHT - dy);
-
-    return dx + dy;
-}
-
-/**
- * Performs flood fill algorithm to determine accessible area from a position
- *
- * @param startX, startY Starting position for flood fill
- * @param tempGrid Grid representation to check for obstacles
- * @return Number of cells accessible from the starting position
- */
-int floodFill(uint8_t startX, uint8_t startY, bool tempGrid[][GRID_HEIGHT])
-{
-    bool visited[GRID_WIDTH][GRID_HEIGHT] = {false}; // Track visited cells
-    std::queue<std::pair<uint8_t, uint8_t>> q;       // Queue for BFS
-
-    // Start from the given position
+    std::queue<std::pair<uint8_t, uint8_t>> q;
     q.push({startX, startY});
-    visited[startX][startY] = true;
-    int area = 0; // Counts accessible cells
+    int count = 0;
 
-    // Breadth-first search to visit all connected cells
     while (!q.empty())
     {
-        // Using explicit pair access for C++14 compatibility
-        std::pair<uint8_t, uint8_t> current = q.front();
-        uint8_t x = current.first;
-        uint8_t y = current.second;
+        auto [x, y] = q.front();
         q.pop();
-        area++; // Count this cell
 
-        // Check all four adjacent directions
-        for (int i = 0; i < 4; i++)
+        // Skip if already visited or occupied
+        if (visited[x][y] || tempGrid[x][y])
+            continue;
+
+        // Mark as visited
+        visited[x][y] = true;
+        count++;
+
+        // Explore all 4 directions
+        for (int dir = 0; dir < 4; dir++)
         {
-            // Calculate next position with wrap-around
-            uint8_t nx = (x + dx[i] + GRID_WIDTH) % GRID_WIDTH;
-            uint8_t ny = (y + dy[i] + GRID_HEIGHT) % GRID_HEIGHT;
+            uint8_t nx = (x + dx[dir] + GRID_WIDTH) % GRID_WIDTH;
+            uint8_t ny = (y + dy[dir] + GRID_HEIGHT) % GRID_HEIGHT;
 
-            // If not visited and not blocked, add to queue
-            if (!visited[nx][ny] && !tempGrid[nx][ny])
-            {
-                visited[nx][ny] = true;
+            if (!visited[nx][ny] && !tempGrid[nx][ny]) // Only add unvisited and free cells
                 q.push({nx, ny});
-            }
         }
     }
 
-    return area;
+    return count;
 }
 
 /**
- * Predicts an opponent's likely next move based on their current trajectory
- *
- * @param opponentIdx Index of the opponent (0-3)
- * @return Predicted direction (UP/RIGHT/DOWN/LEFT) or 0 if prediction not possible
- */
-uint8_t predictOpponentMove(int opponentIdx)
-{
-    // Need at least two positions to determine direction
-    if (player_traces[opponentIdx].size() < 2)
-        return 0;
-
-    // Get the opponent's last two positions
-    auto &trace = player_traces[opponentIdx];
-    uint8_t x1 = trace[trace.size() - 2].first;
-    uint8_t y1 = trace[trace.size() - 2].second;
-    uint8_t x2 = trace[trace.size() - 1].first;
-    uint8_t y2 = trace[trace.size() - 1].second;
-
-    // Determine current direction considering wrap-around
-    uint8_t current_dir = 0;
-    if (x2 == (x1 + 1) % GRID_WIDTH)
-        current_dir = RIGHT;
-    else if (x2 == (x1 + GRID_WIDTH - 1) % GRID_WIDTH)
-        current_dir = LEFT;
-    else if (y2 == (y1 + 1) % GRID_HEIGHT)
-        current_dir = DOWN;
-    else if (y2 == (y1 + GRID_HEIGHT - 1) % GRID_HEIGHT)
-        current_dir = UP;
-
-    // First, predict opponent will continue in the same direction
-    uint8_t nx = (x2 + dx[current_dir - 1] + GRID_WIDTH) % GRID_WIDTH;
-    uint8_t ny = (y2 + dy[current_dir - 1] + GRID_HEIGHT) % GRID_HEIGHT;
-
-    if (!grid[nx][ny])
-        return current_dir; // Can continue in same direction
-
-    // If continuing is impossible, predict a turn (not 180° turn)
-    for (int i = 1; i <= 4; i++)
-    {
-        if (abs(i - current_dir) == 2)
-            continue; // Skip 180° turn (impossible in game)
-
-        nx = (x2 + dx[i - 1] + GRID_WIDTH) % GRID_WIDTH;
-        ny = (y2 + dy[i - 1] + GRID_HEIGHT) % GRID_HEIGHT;
-
-        if (!grid[nx][ny])
-            return i; // Found valid turn direction
-    }
-
-    return 0; // No valid move prediction (opponent is trapped)
-}
-
-/**
- * Evaluates the quality of a potential move using multiple heuristics
+ * Evaluates the quality of a potential move using simple rules
  *
  * @param x, y Current position of our player
  * @param direction Direction to evaluate (UP/RIGHT/DOWN/LEFT)
@@ -150,92 +68,24 @@ uint8_t predictOpponentMove(int opponentIdx)
  */
 float evaluateMove(uint8_t x, uint8_t y, uint8_t direction)
 {
-    // Calculate potential new position with wrap-around
     uint8_t nx = (x + dx[direction - 1] + GRID_WIDTH) % GRID_WIDTH;
     uint8_t ny = (y + dy[direction - 1] + GRID_HEIGHT) % GRID_HEIGHT;
 
-    // Check if the move is valid (not hitting an occupied cell)
     if (grid[nx][ny])
-        return -1000.0f; // Invalid move, assign very low score
+    {
+        return -1000.0f; // Collision penalty
+    }
 
-    // Create temporary grid for simulation
     bool tempGrid[GRID_WIDTH][GRID_HEIGHT];
     memcpy(tempGrid, grid, sizeof(grid));
-    tempGrid[nx][ny] = true; // Mark the new position as occupied
+    tempGrid[nx][ny] = true;
+    int accessibleSpace = floodFill(nx, ny, tempGrid);
 
-    // Calculate available space with flood fill (key territory metric)
-    int availableSpace = floodFill(nx, ny, tempGrid);
-
-    // Calculate distance to closest opponent (for collision avoidance)
-    float minDistToOpponent = 1000.0f;
-    for (int i = 0; i < 4; i++)
-    {
-        if (i == my_player_index || player_traces[i].empty())
-            continue; // Skip self or dead players
-
-        auto &opTrace = player_traces[i];
-        float dist = distanceWithWrap(nx, ny, opTrace.back().first, opTrace.back().second);
-        minDistToOpponent = min(minDistToOpponent, dist);
-    }
-
-    // Calculate wall-following score (preference for edge-following)
-    int wallAdjacency = 0;
-    for (int i = 0; i < 4; i++)
-    {
-        uint8_t wx = (nx + dx[i] + GRID_WIDTH) % GRID_WIDTH;
-        uint8_t wy = (ny + dy[i] + GRID_HEIGHT) % GRID_HEIGHT;
-
-        if (grid[wx][wy])
-            wallAdjacency++;
-    }
-
-    // Weighted evaluation combining multiple factors
-    float score =
-        availableSpace * 10.0f +           // Available space is very important (×10)
-        minDistToOpponent * 0.5f +         // Some distance from opponents is good (×0.5)
-        (wallAdjacency > 0 ? 5.0f : 0.0f); // Slight preference for wall following
-
-    // Check for illegal 180° turn (would cause immediate death)
-    if (abs(direction - last_direction) == 2)
-    {
-        score -= 2000.0f; // Heavy penalty to avoid this move
-    }
-
-    // Prefer continued motion in the same direction (smoother paths)
+    float score = accessibleSpace * 10.0f; // Prioritize open space
     if (direction == last_direction)
-    {
-        score += 5.0f;
-    }
-
-    // Avoid collision with opponents' predicted paths
-    for (int i = 0; i < 4; i++)
-    {
-        if (i == my_player_index || player_traces[i].empty())
-            continue; // Skip self or dead players
-
-        uint8_t predictedDir = predictOpponentMove(i);
-        if (predictedDir > 0)
-        {
-            auto &opTrace = player_traces[i];
-            uint8_t opX = opTrace.back().first;
-            uint8_t opY = opTrace.back().second;
-
-            // Calculate opponent's predicted next position
-            uint8_t pnx = (opX + dx[predictedDir - 1] + GRID_WIDTH) % GRID_WIDTH;
-            uint8_t pny = (opY + dy[predictedDir - 1] + GRID_HEIGHT) % GRID_HEIGHT;
-
-            // Penalize potential direct collision
-            if (nx == pnx && ny == pny)
-            {
-                score -= 200.0f;
-            }
-            // Penalize getting too close to opponent's predicted path
-            else if (distanceWithWrap(nx, ny, pnx, pny) <= 1)
-            {
-                score -= 100.0f;
-            }
-        }
-    }
+        score += 5.0f; // Bonus for continuing in the same direction
+    if (abs(direction - last_direction) == 2)
+        score -= 2000.0f; // High penalty for 180° turns
 
     return score;
 }
@@ -266,10 +116,11 @@ void process_GameState(uint8_t *data)
     // Lambda to update player positions and traces
     auto updatePlayerPosition = [&](uint8_t x, uint8_t y, int playerIndex)
     {
-        if (x != 255 && y != 255)
-        {                                                  // Valid position (player is alive)
-            grid[x][y] = true;                             // Mark occupied cell
+        if (x != 255 && y != 255) // Valid position (player is alive)
+        {
+            grid[x][y] = true; // Mark occupied cell
             player_traces[playerIndex].emplace_back(x, y); // Add to trace history
+            Serial.printf("Player %d occupies (%u, %u)\n", playerIndex + 1, x, y); // Debug log
         }
     };
 
@@ -296,6 +147,7 @@ void process_GameState(uint8_t *data)
     for (uint8_t dir = 1; dir <= 4; dir++)
     {
         float score = evaluateMove(myX, myY, dir);
+        Serial.printf("Direction: %u, Score: %.2f\n", dir, score); // Debug log
 
         if (score > best_score)
         {
@@ -304,38 +156,24 @@ void process_GameState(uint8_t *data)
         }
     }
 
-    // If no good move found or all moves score poorly, try emergency logic
-    if (best_direction == 0 || best_score < -500.0f)
-    {
-        Serial.println("WARNING: No good moves found, trying emergency move!");
-
-        // Simple emergency: find any valid direction that doesn't cause immediate death
-        for (uint8_t dir = 1; dir <= 4; dir++)
-        {
-            // Skip 180° turns (instant death)
-            if (abs(dir - last_direction) == 2)
-                continue;
-
-            uint8_t nx = (myX + dx[dir - 1] + GRID_WIDTH) % GRID_WIDTH;
-            uint8_t ny = (myY + dy[dir - 1] + GRID_HEIGHT) % GRID_HEIGHT;
-
-            if (!grid[nx][ny])
-            {
-                best_direction = dir;
-                break;
-            }
-        }
-    }
-
     // Send the move command if we found a valid direction
     if (best_direction > 0)
     {
+        Serial.printf("Best Direction: %u, Best Score: %.2f\n", best_direction, best_score); // Debug log
         send_Move(best_direction);
         last_direction = best_direction; // Update our direction tracking
     }
     else
     {
-        Serial.println("CRITICAL: No valid moves available!");
+        Serial.println("No valid moves available. Attempting least risky move...");
+        for (uint8_t dir = 1; dir <= 4; dir++)
+        {
+            if (evaluateMove(myX, myY, dir) > -1000.0f)
+            {
+                best_direction = dir;
+                break;
+            }
+        }
     }
 }
 
@@ -355,15 +193,14 @@ void process_Die(uint8_t *data)
         is_dead = true;
     }
 
-    // Clear traces of the dead player from the grid
     if (dead_player_id >= 1 && dead_player_id <= 4)
     {
         for (const auto &trace : player_traces[dead_player_id - 1])
         {
             grid[trace.first][trace.second] = false; // Free up the grid cell
+            Serial.printf("Cleared trace at (%u, %u) for Player %u\n", trace.first, trace.second, dead_player_id);
         }
-        player_traces[dead_player_id - 1].clear(); // Clear trace history
-        Serial.printf("Traces for Player %u cleared.\n", dead_player_id);
+        player_traces[dead_player_id - 1].clear();
     }
 }
 

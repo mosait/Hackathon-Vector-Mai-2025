@@ -69,9 +69,29 @@ void onReceive(int packetSize)
             break;
 
         case Game:           // New game announcement
-            is_dead = false; // Reset dead status at start of new game
-            send_GameAck();  // Acknowledge game participation
-            break;
+        {
+            is_dead = false; 
+            
+            uint8_t game_data[8];
+            CAN.readBytes(game_data, sizeof(game_data)); // Read game data
+
+            uint8_t invited_players[4] = {
+                game_data[0], game_data[1], game_data[2], game_data[3]
+            };
+            
+            for (int i = 0; i < 4; i++)
+            {
+                Serial.printf("Player %d: %u\n", i + 1, invited_players[i]);
+                if (invited_players[i] == player_ID){
+                    send_GameAck();   
+                    break;
+                } else {
+                    is_dead = true;
+                }
+            }
+            
+        break;
+        }
 
         case GameState:   // Regular game state update (player positions)
             if (!is_dead) // Only process if our player is still alive
@@ -146,17 +166,23 @@ void send_GameAck()
  */
 void send_Move(uint8_t direction)
 {
-    // Don't send moves if player is dead
     if (is_dead)
+    {
+        Serial.println("Cannot send move: Player is dead.");
         return;
+    }
 
-    // Send move command with player ID and direction
     CAN.beginPacket(Move);
     CAN.write(player_ID);
     CAN.write(direction);
-    CAN.endPacket();
-
-    Serial.printf("Move sent: Player ID: %u, Direction: %u\n", player_ID, direction);
+    if (CAN.endPacket())
+    {
+        Serial.printf("Move sent successfully: Player ID: %u, Direction: %u\n", player_ID, direction);
+    }
+    else
+    {
+        Serial.println("Error: Failed to send move.");
+    }
 }
 
 /**

@@ -12,15 +12,7 @@
 #include "CANHandler.h"
 #include "GameLogic.h"
 
-/**
- * Arduino setup function - runs once at program start
- *
- * Initializes hardware components and joins the game:
- * 1. Sets up serial communication for debugging
- * 2. Initializes CAN bus with appropriate settings
- * 3. Registers callback for incoming CAN messages
- * 4. Sends initial join request to the game server
- */
+
 void setup()
 {
     // Initialize serial for debugging output at 115200 baud
@@ -49,16 +41,7 @@ void setup()
     send_Join();
 }
 
-/**
- * Arduino main loop - runs continuously after setup
- *
- * This function is intentionally left empty because the program uses
- * an event-driven approach where all processing happens in response to
- * CAN bus messages via the registered callback function.
- *
- * The CAN library automatically calls our onReceive function when
- * messages arrive, so we don't need to poll for messages in the loop.
- */
+
 void loop()
 {
     // Program logic is handled by CAN message callbacks
